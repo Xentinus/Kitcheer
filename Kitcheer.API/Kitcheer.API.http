@@ -1,0 +1,6 @@
+@Kitcheer.API_HostAddress = http://localhost:5287
+
+GET {{Kitcheer.API_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###
