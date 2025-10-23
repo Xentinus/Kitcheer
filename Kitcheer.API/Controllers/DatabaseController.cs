@@ -1,12 +1,16 @@
-using Microsoft.AspNetCore.Mvc;
+Ôªøusing Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
 using Kitcheer.API.Data;
 
 namespace Kitcheer.API.Controllers;
 
+/// <summary>
+/// Adatb√°zis √°llapot √©s kapcsolat ellen≈ërz√©s√©t biztos√≠t√≥ API v√©gpontok
+/// </summary>
 [ApiController]
 [Route("api/[controller]")]
+[Produces("application/json")]
 public class DatabaseController : ControllerBase
 {
     private readonly ApplicationDbContext _context;
@@ -20,7 +24,17 @@ public class DatabaseController : ControllerBase
         _logger = logger;
     }
 
+    /// <summary>
+    /// Adatb√°zis kapcsolat tesztel√©se
+    /// </summary>
+    /// <returns>Kapcsolat √°llapota</returns>
+    /// <response code="200">Sikeres kapcsolat</response>
+    /// <response code="400">Kapcsolat hiba</response>
+    /// <response code="500">Szerver hiba</response>
     [HttpGet("test")]
+    [ProducesResponseType(200)]
+    [ProducesResponseType(400)]
+    [ProducesResponseType(500)]
     public async Task<IActionResult> TestConnection()
     {
         try
@@ -28,63 +42,29 @@ public class DatabaseController : ControllerBase
             var canConnect = await _context.Database.CanConnectAsync();
             if (canConnect)
             {
-                return Ok(new { success = true, message = "Sikeresen kapcsolÛdott az adatb·zishoz" });
+                return Ok(new { success = true, message = "Sikeresen kapcsol√≥dott az adatb√°zishoz" });
             }
             else
             {
-                return BadRequest(new { success = false, message = "Nem siker¸lt kapcsolÛdni az adatb·zishoz" });
+                return BadRequest(new { success = false, message = "Nem siker√ºlt kapcsol√≥dni az adatb√°zishoz" });
             }
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Hiba az adatb·zis kapcsolat tesztelÈsekor");
-            return StatusCode(500, new { success = false, message = "Hiba tˆrtÈnt", error = ex.Message });
+            _logger.LogError(ex, "Hiba az adatb√°zis kapcsolat tesztel√©sekor");
+            return StatusCode(500, new { success = false, message = "Hiba t√∂rt√©nt", error = ex.Message });
         }
     }
 
-    [HttpPost("create")]
-    public async Task<IActionResult> CreateDatabase()
-    {
-        try
-        {
-            var connectionString = _configuration.GetConnectionString("DefaultConnection");
-            if (string.IsNullOrEmpty(connectionString))
-            {
-                return BadRequest(new { success = false, message = "Kapcsolati string nem tal·lhatÛ" });
-            }
-
-            // Parse connection string to get server connection without database
-            var builder = new NpgsqlConnectionStringBuilder(connectionString);
-            var databaseName = builder.Database;
-            builder.Database = "postgres"; // Connect to default postgres database
-            var serverConnectionString = builder.ToString();
-
-            using var serverConnection = new NpgsqlConnection(serverConnectionString);
-            await serverConnection.OpenAsync();
-
-            // Check if database exists
-            var checkDbCommand = new NpgsqlCommand($"SELECT 1 FROM pg_database WHERE datname = '{databaseName}'", serverConnection);
-            var exists = await checkDbCommand.ExecuteScalarAsync();
-
-            if (exists != null)
-            {
-                return Ok(new { success = true, message = $"Az adatb·zis '{databaseName}' m·r lÈtezik" });
-            }
-
-            // Create database
-            var createDbCommand = new NpgsqlCommand($"CREATE DATABASE \"{databaseName}\"", serverConnection);
-            await createDbCommand.ExecuteNonQueryAsync();
-
-            return Ok(new { success = true, message = $"Az adatb·zis '{databaseName}' sikeresen lÈtrehozva" });
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Hiba az adatb·zis lÈtrehoz·sakor");
-            return StatusCode(500, new { success = false, message = "Hiba tˆrtÈnt az adatb·zis lÈtrehoz·sakor", error = ex.Message });
-        }
-    }
-
+    /// <summary>
+    /// R√©szletes adatb√°zis inform√°ci√≥k lek√©r√©se
+    /// </summary>
+    /// <returns>Adatb√°zis inform√°ci√≥k (verzi√≥, m√©ret, t√°bl√°k, migr√°ci√≥k)</returns>
+    /// <response code="200">Sikeres lek√©r√©s</response>
+    /// <response code="500">Szerver hiba</response>
     [HttpGet("info")]
+    [ProducesResponseType(200)]
+    [ProducesResponseType(500)]
     public async Task<IActionResult> GetDatabaseInfo()
     {
         try
@@ -101,6 +81,29 @@ public class DatabaseController : ControllerBase
             var dbSizeCommand = new NpgsqlCommand($"SELECT pg_size_pretty(pg_database_size('{builder.Database}'))", connection);
             var dbSize = await dbSizeCommand.ExecuteScalarAsync();
 
+            // Get applied and pending migrations
+            var appliedMigrations = await _context.Database.GetAppliedMigrationsAsync();
+            var pendingMigrations = await _context.Database.GetPendingMigrationsAsync();
+
+            // Get table information
+            var tablesCommand = new NpgsqlCommand(@"
+                SELECT table_name, 
+                (SELECT COUNT(*) FROM information_schema.columns WHERE table_name = t.table_name AND table_schema = 'public') as column_count
+                FROM information_schema.tables t
+                WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
+                ORDER BY table_name", connection);
+
+            var tables = new List<object>();
+            using var reader = await tablesCommand.ExecuteReaderAsync();
+            while (await reader.ReadAsync())
+            {
+                tables.Add(new
+                {
+                    name = reader.GetString(0),
+                    columnCount = reader.GetInt32(1)
+                });
+            }
+
             return Ok(new
             {
                 success = true,
@@ -108,13 +111,17 @@ public class DatabaseController : ControllerBase
                 host = builder.Host,
                 port = builder.Port,
                 version = version?.ToString(),
-                size = dbSize?.ToString()
+                size = dbSize?.ToString(),
+                tables = tables,
+                appliedMigrations = appliedMigrations.ToList(),
+                pendingMigrations = pendingMigrations.ToList(),
+                migrationsUpToDate = !pendingMigrations.Any()
             });
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Hiba az adatb·zis inform·ciÛk lekÈrÈsekor");
-            return StatusCode(500, new { success = false, message = "Hiba tˆrtÈnt", error = ex.Message });
+            _logger.LogError(ex, "Hiba az adatb√°zis inform√°ci√≥k lek√©r√©sekor");
+            return StatusCode(500, new { success = false, message = "Hiba t√∂rt√©nt", error = ex.Message });
         }
     }
 }
